@@ -33,14 +33,20 @@ public class Server {
     private static ZKClientManagerImpl zkmanager = new ZKClientManagerImpl();
     private static String hostPort;
     private static ConsistentHashing partitioner = new ConsistentHashing();
-    private static Map<String, String> myMap = new HashMap<String, String>();
+    private static MyHashMap myMap = new MyHashMap();
     private static Map<String, SocketChannel> nodeMap = new HashMap<String, SocketChannel>();
+    private static Map<String, SocketChannel> requestMap = new HashMap<String, SocketChannel>();
+    private static Selector selector;
+    private static ServerSocketChannel serverSocket;
 
     public static void main(String[] args) throws IOException, KeeperException, InterruptedException {
         String host = args[0];
         int port = Integer.parseInt(args[1]);
         hostPort = host + ":" + String.valueOf(port);
-        partitioner.insert(hostPort);
+
+        synchronized(partitioner) {
+            partitioner.insert(hostPort);
+        }
 
         byte[] data = hostPort.getBytes();
 
@@ -49,8 +55,9 @@ public class Server {
 
         new Thread(() -> addOtherPartitions()).start();
 
-        Selector selector = Selector.open();
-        ServerSocketChannel serverSocket = ServerSocketChannel.open();
+        selector = Selector.open();
+        serverSocket = ServerSocketChannel.open();
+
         serverSocket.bind(new InetSocketAddress("localhost", port));
         serverSocket.configureBlocking(false);
         serverSocket.register(selector, SelectionKey.OP_ACCEPT);
@@ -65,18 +72,18 @@ public class Server {
                 SelectionKey key = iter.next();
 
                 if (key.isAcceptable()) {
-                    register(selector, serverSocket);
+                    SocketChannel client = serverSocket.accept();
+                    register(selector, client);
                 }
 
                 if (key.isReadable()) {
                     SocketChannel client = (SocketChannel) key.channel();
                     List<String> msgs = getMessages(client);
                     for (String msg : msgs) {
-                        System.out.println(msg);
-                        msg += "<EOM>";
-                        client.write(ByteBuffer.wrap(msg.getBytes()));
+                        handleRequest(msg, client);
                     }
                 }
+
                 iter.remove();
             }
         }
@@ -103,7 +110,7 @@ public class Server {
     }
 
     private static List<String> getMessages(SocketChannel client) throws IOException {
-        ByteBuffer buffer = ByteBuffer.allocate(5);
+        ByteBuffer buffer = ByteBuffer.allocate(1024);
         String remainder = "";
         String delim = "<EOM>";
         List<String> all_msgs = new ArrayList<String>();
@@ -138,10 +145,8 @@ public class Server {
         return all_msgs;
     }
 
-    private static void register(Selector selector, ServerSocketChannel serverSocket)
+    private static void register(Selector selector, SocketChannel client)
       throws IOException {
- 
-        SocketChannel client = serverSocket.accept();
         client.configureBlocking(false);
         client.register(selector, SelectionKey.OP_READ);
     }
@@ -149,12 +154,13 @@ public class Server {
     private static void addOtherPartitions() {
         while(true) {
             try {
-                partitioner.clear();
-                List<String> partitions = zkmanager.getZNodeChildren("/partition");
-                
-                for (String partition : partitions) {
-                    if (partition != hostPort) {
-                        partitioner.insert(partition);
+                synchronized(partitioner) {
+                    List<String> partitions = zkmanager.getZNodeChildren("/partition");
+                    
+                    for (String partition : partitions) {
+                        if (partition != hostPort) {
+                            partitioner.insert(partition);
+                        }
                     }
                 }
 
@@ -167,77 +173,107 @@ public class Server {
     } 
 
     private static void handleRequest(String request, SocketChannel client) {
+        System.out.println(request);
         JSONObject obj = new JSONObject(request);
+
         String op = obj.getString("operator");
+        String data = obj.getString("data");
+        String request_id = obj.getString("request_id");
+        long timestamp = obj.getLong("timestamp");
+        int request_type = obj.getInt("request_type");
 
-        if (op.equals("PUT")) {
-            String data = obj.getString("data");
-            String[] dataParts = data.split(":");
-
-            String key = dataParts[0];
-            String val = dataParts[1];
-
-            String node = partitioner.getNext(key);
-
-            try {
-                if (node.equals(hostPort)) {
-                    myMap.put(key, val);
+        try {
+            if (request_type == 1) {
+                if (requestMap.containsKey(request_id)) {
+                    client = requestMap.get(request_id);
+                    String clientMsg = obj.toString() + "<EOM>";
+                    client.write(ByteBuffer.wrap(clientMsg.getBytes()));
                 }
-                else {
-                    SocketChannel socket;
-
-                    if (nodeMap.containsKey(node)) {
-                        socket = nodeMap.get(node);
-                    }
-                    else {
-                        String[] ipPort = node.split(":");
-                        String ip = ipPort[0];
-                        int port = Integer.parseInt(ipPort[1]);
-                        socket = SocketChannel.open(new InetSocketAddress(ip, port));
-                        nodeMap.put(node, socket);
-                    }
-
-                    String requestMsg = request + "<EOM>";
-                    ByteBuffer buffer = ByteBuffer.wrap(requestMsg.getBytes());
-                    socket.write(buffer);
-                }
-            } catch (IOException e) {
-                e.printStackTrace();
             }
-        }
+            else {
+                if (op.equals("PUT")) {
+                    String[] dataParts = data.split(":");
 
-        else if (op.equals("GET")) {
-            String key = obj.getString("data");
-            String node = partitioner.getNext(key);
+                    String key = dataParts[0];
+                    String val = dataParts[1];
 
-            try {
-                if (node.equals(hostPort)) {
-                    String val = myMap.get(key) + "<EOM>";
-                    ByteBuffer buffer = ByteBuffer.wrap(val.getBytes());
-                    client.write(buffer);
-                }
-                else {
-                    SocketChannel socket;
-                    
-                    if (nodeMap.containsKey(node)) {
-                        socket = nodeMap.get(node);
+                    synchronized(partitioner) {
+                        partitioner.print();
+                        String node = partitioner.getNext(key);
+
+                        if (node.equals(hostPort)) {
+                            myMap.insert(key, val, timestamp);
+
+                            obj.put("request_type", 1);
+                            obj.put("data", "OK");
+                            obj.put("node", hostPort);
+
+                            String clientMsg = obj.toString() + "<EOM>";
+                            client.write(ByteBuffer.wrap(clientMsg.getBytes()));
+                        }
+                        else {
+                            SocketChannel socket;
+
+                            if (nodeMap.containsKey(node)) {
+                                socket = nodeMap.get(node);
+                            }
+                            else {
+                                String[] ipPort = node.split(":");
+                                String ip = ipPort[0];
+                                int port = Integer.parseInt(ipPort[1]);
+                                socket = SocketChannel.open(new InetSocketAddress(ip, port));
+                                register(selector, socket);
+                                nodeMap.put(node, socket);
+                            }
+
+                            requestMap.put(request_id, client);
+                            String requestMsg = request + "<EOM>";
+                            ByteBuffer buffer = ByteBuffer.wrap(requestMsg.getBytes());
+                            socket.write(buffer);
+                        }
                     }
-                    else {
-                        String[] ipPort = node.split(":");
-                        String ip = ipPort[0];
-                        int port = Integer.parseInt(ipPort[1]);
-                        socket = SocketChannel.open(new InetSocketAddress(ip, port));
-                        nodeMap.put(node, socket);
-                    }
-
-                    String requestMsg = request + "<EOM>";
-                    ByteBuffer buffer = ByteBuffer.wrap(requestMsg.getBytes());
-                    socket.write(buffer);
                 }
-            } catch (IOException e) {
-                e.printStackTrace();
+
+                else if (op.equals("GET")) {
+                    String key = data;
+
+                    synchronized(partitioner) {
+                        String node = partitioner.getNext(key);
+
+                        if (node.equals(hostPort)) {
+                            String val = myMap.get(key);
+
+                            obj.put("request_type", 1);
+                            obj.put("data", val);
+                            obj.put("node", hostPort);
+
+                            String clientMsg = obj.toString() + "<EOM>";
+                            client.write(ByteBuffer.wrap(clientMsg.getBytes()));
+                        }
+                        else {
+                            SocketChannel socket;
+                            
+                            if (nodeMap.containsKey(node)) {
+                                socket = nodeMap.get(node);
+                            }
+                            else {
+                                String[] ipPort = node.split(":");
+                                String ip = ipPort[0];
+                                int port = Integer.parseInt(ipPort[1]);
+                                socket = SocketChannel.open(new InetSocketAddress(ip, port));
+                                register(selector, socket);
+                                nodeMap.put(node, socket);
+                            }
+
+                            String requestMsg = request + "<EOM>";
+                            ByteBuffer buffer = ByteBuffer.wrap(requestMsg.getBytes());
+                            socket.write(buffer);
+                        }
+                    }
+                }
             }
-            
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 }

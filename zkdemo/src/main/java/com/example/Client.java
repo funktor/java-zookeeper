@@ -5,6 +5,9 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.util.Scanner;
+
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -62,8 +65,6 @@ public class Client {
 
                 if (r > 0) {
                     String msg = new String(buffer.array(), 0, r);
-                    System.out.println(msg);
-
                     msg = remainder + msg;
                     MessageParsedTuple parsedTuple = split(msg, delim);
 
@@ -71,7 +72,9 @@ public class Client {
                     msg = parsedTuple.finalString;
 
                     for (String in_msg : parts) {
-                        System.out.println(in_msg);
+                        JSONObject jsonObject = new JSONObject(in_msg);
+                        System.out.println("response : " + jsonObject.getString("data"));
+                        System.out.println("response-node : " + jsonObject.getString("node"));
                     }
 
                     remainder = msg;
@@ -100,11 +103,29 @@ public class Client {
         Client client = start();
 
         new Thread(() -> client.getMessage()).start();
+        int id = 0;
 
         try {
             while(true) {
                 String input = in.nextLine();
-                client.sendMessage(input);
+                String[] inputs = input.split(":");
+
+                JSONObject jsonObj = new JSONObject();
+
+                if (inputs.length == 1) {
+                    jsonObj.put("operator", "GET");
+                }
+                else {
+                    jsonObj.put("operator", "PUT");
+                }
+
+                jsonObj.put("request_id", Integer.toString(id));
+                jsonObj.put("data", input);
+                jsonObj.put("request_type", 0);
+                jsonObj.put("timestamp", System.currentTimeMillis());
+
+                String msg = jsonObj.toString() + "<EOM>";
+                client.sendMessage(msg);
             }
         } catch (Exception e) {
             e.printStackTrace();
