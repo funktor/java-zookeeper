@@ -18,20 +18,25 @@ public class ConsistentHashing {
         keyValueMap.put(key, value);
     }
 
-    public String getNext(String value) {
+    public int getNextKey(String value) {
         int key = getHash(value);
 
         if (keyValueMap.containsKey(key)) {
-            return keyValueMap.get(key);
+            return key;
         }
 
         Map.Entry<Integer, String> entry = keyValueMap.higherEntry(key);
 
         if (entry == null) {
-            return keyValueMap.firstEntry().getValue();
+            return keyValueMap.firstEntry().getKey();
         }
 
-        return keyValueMap.higherEntry(key).getValue();
+        return keyValueMap.higherEntry(key).getKey();
+    }
+
+    public String getNext(String value) {
+        int key = getNextKey(value);
+        return keyValueMap.get(key);
     }
 
     public void delete(String value) {

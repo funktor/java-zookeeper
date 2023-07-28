@@ -40,7 +40,7 @@ public class ZKClientManagerImpl implements ZKManager {
 	}
 
 	@Override
-	public void create(String path, byte[] data, boolean isPersistent) throws KeeperException,
+	public void create(String path, byte[] data, boolean isPersistent, boolean isSequential) throws KeeperException,
 			InterruptedException {
         
         Stat stat = getZNodeStats(path);
@@ -51,8 +51,14 @@ public class ZKClientManagerImpl implements ZKManager {
 				    CreateMode.PERSISTENT);
             }
             else {
-                zkeeper.create(path, data, ZooDefs.Ids.OPEN_ACL_UNSAFE,
-				    CreateMode.EPHEMERAL);
+                if (isSequential) {
+                    zkeeper.create(path, data, ZooDefs.Ids.OPEN_ACL_UNSAFE,
+				        CreateMode.EPHEMERAL_SEQUENTIAL);
+                }
+                else {
+                    zkeeper.create(path, data, ZooDefs.Ids.OPEN_ACL_UNSAFE,
+				        CreateMode.EPHEMERAL);
+                }
             }
         }
 	}
@@ -71,7 +77,7 @@ public class ZKClientManagerImpl implements ZKManager {
 	}
 
 	@Override
-	public Object getZNodeData(String path, boolean watchFlag) throws KeeperException,
+	public String getZNodeData(String path, boolean watchFlag) throws KeeperException,
 			InterruptedException {
 		try {
 			Stat stat = getZNodeStats(path);

@@ -42,7 +42,7 @@ public class ZKClientTest {
 	public void testCreate() throws KeeperException, InterruptedException {
 		// data in byte array
 		
-		zkmanager.create(path, data, true);
+		zkmanager.create(path, data, true, false);
 		Stat stat = zkmanager.getZNodeStats(path);
 		assertNotNull(stat);
 		zkmanager.delete(path);
@@ -59,7 +59,7 @@ public class ZKClientTest {
 	@Test
 	public void testGetZNodeStats() throws KeeperException,
 			InterruptedException {
-		zkmanager.create(path, data, true);
+		zkmanager.create(path, data, true, false);
 		Stat stat = zkmanager.getZNodeStats(path);
 		assertNotNull(stat);
 		assertNotNull(stat.getVersion());
@@ -76,7 +76,7 @@ public class ZKClientTest {
 	 */
 	@Test
 	public void testGetZNodeData() throws KeeperException, InterruptedException {
-		zkmanager.create(path, data, true);
+		zkmanager.create(path, data, true, false);
 		String data = (String)zkmanager.getZNodeData(path,false);
 		assertNotNull(data);
 		zkmanager.delete(path);
@@ -91,7 +91,7 @@ public class ZKClientTest {
 	 */
 	@Test
 	public void testUpdate() throws KeeperException, InterruptedException {
-		zkmanager.create(path, data, true);
+		zkmanager.create(path, data, true, false);
 		String data = "www.java.globinch.com Updated Data";
 		byte[] dataBytes = data.getBytes();
 		zkmanager.update(path, dataBytes);
@@ -109,7 +109,7 @@ public class ZKClientTest {
 	 */
 	@Test
 	public void testGetZNodeChildren() throws KeeperException, InterruptedException {
-		zkmanager.create(path, data, true);
+		zkmanager.create(path, data, true, false);
 		List<String> children= zkmanager.getZNodeChildren(path);
 		assertNotNull(children);
 		zkmanager.delete(path);
@@ -124,7 +124,7 @@ public class ZKClientTest {
 	 */
 	@Test
 	public void testDelete() throws KeeperException, InterruptedException {
-		zkmanager.create(path, data, true);
+		zkmanager.create(path, data, true, false);
 		zkmanager.delete(path);
 		Stat stat = zkmanager.getZNodeStats(path);
 		assertNull(stat);

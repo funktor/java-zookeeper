@@ -5,6 +5,7 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.util.Scanner;
+import java.util.UUID;
 
 import org.json.JSONObject;
 
@@ -103,7 +104,6 @@ public class Client {
         Client client = start();
 
         new Thread(() -> client.getMessage()).start();
-        int id = 0;
 
         try {
             while(true) {
@@ -112,6 +112,8 @@ public class Client {
 
                 JSONObject jsonObj = new JSONObject();
 
+                UUID uuid = UUID.randomUUID();
+
                 if (inputs.length == 1) {
                     jsonObj.put("operator", "GET");
                 }
@@ -119,7 +121,7 @@ public class Client {
                     jsonObj.put("operator", "PUT");
                 }
 
-                jsonObj.put("request_id", Integer.toString(id));
+                jsonObj.put("request_id", uuid.toString());
                 jsonObj.put("data", input);
                 jsonObj.put("request_type", 0);
                 jsonObj.put("timestamp", System.currentTimeMillis());

@@ -2,6 +2,7 @@ package com.example;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 class MapObject {
     String value;
@@ -28,5 +29,22 @@ public class MyHashMap {
             return myMap.get(key).value;
         }
         return "NOT FOUND";
+    }
+
+    public long getTimestamp(String key) {
+        if (myMap.containsKey(key)) {
+            return myMap.get(key).timestamp;
+        }
+        return -1;
+    }
+
+    public Set<String> getKeys() {
+        return myMap.keySet();
+    }
+
+    public void delete(String key) {
+        if (myMap.containsKey(key)) {
+            myMap.remove(key);
+        }
     }
 }

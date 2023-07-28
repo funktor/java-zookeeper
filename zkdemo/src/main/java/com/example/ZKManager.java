@@ -14,7 +14,7 @@ public interface  ZKManager {
 	 * @throws KeeperException
 	 * @throws InterruptedException
 	 */
-	public void create(String path, byte[] data, boolean isPersistent) throws KeeperException, InterruptedException;
+	public void create(String path, byte[] data, boolean isPersistent, boolean isSequential) throws KeeperException, InterruptedException;
 
 	/**
 	 * Get the ZNode Stats
@@ -35,7 +35,7 @@ public interface  ZKManager {
 	 * @throws KeeperException
 	 * @throws InterruptedException
 	 */
-	public Object getZNodeData(String path,boolean watchFlag) throws KeeperException,
+	public String getZNodeData(String path,boolean watchFlag) throws KeeperException,
 			InterruptedException;
 
 	/**
