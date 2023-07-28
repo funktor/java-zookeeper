@@ -8,6 +8,7 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -25,10 +26,10 @@ import org.json.JSONObject;
 import java.util.List;
 
 class MessageParsedTuple {
-    List<String> parts;
+    String[] parts;
     String finalString;
 
-    public MessageParsedTuple(List<String> parts, String finalString) {
+    public MessageParsedTuple(String[] parts, String finalString) {
         this.parts = parts;
         this.finalString = finalString;
     }
@@ -60,42 +61,59 @@ public class Server {
     private static List<String> replicas = Collections.synchronizedList(new ArrayList<String>());
     private static String partitionLeaderNode;
     private static CommitLog commitLog;
+    private static String DELIM = "<EOM>";
 
     public static void main(String[] args) throws IOException, KeeperException, InterruptedException {
+        // Get server host IP, port and partition id from command line
         String host = args[0];
         int port = Integer.parseInt(args[1]);
         hostPort = host + ":" + String.valueOf(port);
         partitionId = args[2];
+
+        // Commit log
         commitLog = new CommitLog("commitlog-" + hostPort + ".txt");
 
+        // Add server to consistent hashing table
         addNodeToPartitioner();
+
+        // Create ZNodes for server
         createZnodes();
 
+        // Run background threads for adding server to cluster, reconcile keys 
+        // in the consistent hashing ring and replicate logs to other replicas
         new Thread(() -> addNodeToCluster()).start();
-        // new Thread(() -> runReconciliation()).start();
+        new Thread(() -> runReconciliation()).start();
         new Thread(() -> replicate()).start();
 
+        // Create socket selector and a socket for server
         selector = Selector.open();
         serverSocket = ServerSocketChannel.open();
 
+        // Make server socket non-blocking
         serverSocket.bind(new InetSocketAddress("localhost", port));
         serverSocket.configureBlocking(false);
+
+        // Register server socket to selector
+        // Server socket can only ACCEPT, client sockets are READ
         serverSocket.register(selector, SelectionKey.OP_ACCEPT);
 
         while (true) {
+            // Get all sockets ready to connect or send message
             selector.select();
             Set<SelectionKey> selectedKeys = selector.selectedKeys();
             Iterator<SelectionKey> iter = selectedKeys.iterator();
             
             while (iter.hasNext()) {
-
                 SelectionKey key = iter.next();
 
+                // Client ready to connect to server.
+                // Accept and register the client socket.
                 if (key.isAcceptable()) {
                     SocketChannel client = serverSocket.accept();
                     register(selector, client);
                 }
 
+                // Client socket ready to send messages to server
                 if (key.isReadable()) {
                     SocketChannel client = (SocketChannel) key.channel();
                     List<String> msgs = getMessages(client);
@@ -109,59 +127,64 @@ public class Server {
         }
     }
 
-    private static MessageParsedTuple split(String str, String delim) {
-        List<String> parts = new ArrayList<String>();
+    public static MessageParsedTuple split(String str, String delim) {
+        // Split str by delimiter
+        // Update str to point to last part after splitting
+        try {
+            String[] parts = str.split(delim);
+            str = parts[parts.length-1];
 
-        while(true) {
-            int pos = str.indexOf(delim);
-            if (pos >= 0) {
-                String sub = str.substring(0, pos);
-                if (sub.length() > 0) {
-                    parts.add(sub);
-                }
-                str = str.substring(pos+delim.length());
-            }
-            else {
-                break;
-            }
+            return new MessageParsedTuple(parts, str);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-
-        return new MessageParsedTuple(parts, str);
+        
+        return null;
     }
 
     public static void register(Selector selector, SocketChannel client)
       throws IOException {
+        // Register socket with selector
+        // Need to make non-blocking
         client.configureBlocking(false);
         client.register(selector, SelectionKey.OP_READ);
     }
 
-    private static List<String> getMessages(SocketChannel client) throws IOException {
+    public static List<String> getMessages(SocketChannel client) throws IOException {
+        // Parse messages from client socket
         ByteBuffer buffer = ByteBuffer.allocate(1024);
         String remainder = "";
-        String delim = "<EOM>";
         List<String> all_msgs = new ArrayList<String>();
 
         while(true) {
+            // Read r bytes from client socket into buffer
             int r = client.read(buffer);
 
             if (r > 0) {
+                // Convert to string
                 String msg = new String(buffer.array(), 0, r);
-                System.out.println(msg);
 
+                // Update msg by adding the in-complete message
+                // from last invocation to current invocation.
                 msg = remainder + msg;
-                MessageParsedTuple parsedTuple = split(msg, delim);
+                MessageParsedTuple parsedTuple = split(msg, DELIM);
 
-                List<String> parts = parsedTuple.parts;
+                String[] parts = parsedTuple.parts;
                 msg = parsedTuple.finalString;
 
-                all_msgs.addAll(parts);
+                // Add all complete messages into list
+                all_msgs.addAll(Arrays.asList(parts));
+
+                // Update remainder to point to incomplete message.
                 remainder = msg;
                 buffer.clear();
             }
             else if (r == 0) {
+                // No more data to send
                 break;
             }
             else {
+                // Client closed connection
                 client.close();
                 System.out.println("Not accepting client messages anymore");
                 break;
@@ -172,13 +195,16 @@ public class Server {
     }
 
     public static void sendMessage(String request, String nodeHostPort) {
+        // Send message to nodeHostPort
         try {
             SocketChannel socket;
 
+            // Reuse socket to send message
             if (nodeMap.containsKey(nodeHostPort)) {
                 socket = nodeMap.get(nodeHostPort);
             }
             else {
+                // Socket being used for the 1st time
                 String[] ipPort = nodeHostPort.split(":");
                 String ip = ipPort[0];
                 int port = Integer.parseInt(ipPort[1]);
@@ -187,8 +213,34 @@ public class Server {
                 nodeMap.put(nodeHostPort, socket);
             }
 
+            // Write to socket
             ByteBuffer buffer = ByteBuffer.wrap(request.getBytes());
-            socket.write(buffer);
+            
+            // If socket got closed before writing
+            int num_retries = 5;
+            int ret = 0;
+
+            while(ret < num_retries) {
+                int m = socket.write(buffer);
+
+                if (m == -1) {
+                    // Recreate socket and add again after 2 seconds.
+                    socket.close();
+
+                    TimeUnit.SECONDS.sleep(2);
+
+                    String[] ipPort = nodeHostPort.split(":");
+                    String ip = ipPort[0];
+                    int port = Integer.parseInt(ipPort[1]);
+                    socket = SocketChannel.open(new InetSocketAddress(ip, port));
+                    register(selector, socket);
+                    nodeMap.put(nodeHostPort, socket);
+                }
+                else {
+                    break;
+                }
+                ret += 1;
+            }
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -196,6 +248,8 @@ public class Server {
     }
 
     public static void handleRequest(String request, SocketChannel client) {
+        // Handle client request
+
         System.out.println(request);
         JSONObject obj = new JSONObject(request);
 
@@ -207,6 +261,8 @@ public class Server {
 
         try {
             if (request_type == 1) {
+                // Response given by another server
+                // Forward to client if required
                 if (requestMap.containsKey(request_id)) {
                     client = requestMap.get(request_id);
                     String clientMsg = obj.toString() + "<EOM>";
@@ -221,7 +277,7 @@ public class Server {
                     String val = dataParts[1];
 
                     synchronized(partitioner) {
-                        String partition = partitioner.getNext(key);
+                        String partition = partitioner.getNext(key, false);
 
                         if (partition.equals(partitionId)) {
                             writeLog(request);
@@ -250,7 +306,7 @@ public class Server {
                     String key = data;
 
                     synchronized(partitioner) {
-                        String partition = partitioner.getNext(key);
+                        String partition = partitioner.getNext(key, false);
 
                         if (partition.equals(partitionId)) {
                             String val = myMap.get(key);
@@ -264,6 +320,8 @@ public class Server {
                         }
                         else {
                             String node = getLeaderForPartition(partition);
+                            
+                            requestMap.put(request_id, client);
                             sendMessage(request + "<EOM>", node);
                         }
                     }
@@ -277,7 +335,7 @@ public class Server {
                         Set<String> toDelete = new HashSet<String>();
 
                         for (String k : keys) {
-                            if (partitioner.getNextKey(k) == nodeHash) {
+                            if (partitioner.getNextKey(k, false) == nodeHash) {
                                 toDelete.add(k);
                             }
                         }
@@ -418,24 +476,26 @@ public class Server {
 
     public static void reconcileKeys() {
         try {
-            synchronized(partitioner) {
-                String partition = partitioner.getNext(partitionId);
-                String nextNode = getLeaderForPartition(partition);
+            if (isLeader) {
+                synchronized(partitioner) {
+                    String partition = partitioner.getNext(partitionId, true);
 
-                if (!nextNode.equals(hostPort)) {
-                    JSONObject jsonObj = new JSONObject();
-                    UUID uuid = UUID.randomUUID();
+                    if (!partition.equals(partitionId)) {
+                        String nextNode = getLeaderForPartition(partition);
 
-                    jsonObj.put("operator", "RECONCILE-KEYS");
-                    jsonObj.put("request_id", uuid.toString());
-                    jsonObj.put("data", partitionId);
-                    jsonObj.put("request_type", 0);
-                    jsonObj.put("timestamp", System.currentTimeMillis());
+                        JSONObject jsonObj = new JSONObject();
+                        UUID uuid = UUID.randomUUID();
 
-                    sendMessage(jsonObj.toString() + "<EOM>", nextNode);
+                        jsonObj.put("operator", "RECONCILE-KEYS");
+                        jsonObj.put("request_id", uuid.toString());
+                        jsonObj.put("data", partitionId);
+                        jsonObj.put("request_type", 0);
+                        jsonObj.put("timestamp", System.currentTimeMillis());
+
+                        sendMessage(jsonObj.toString() + "<EOM>", nextNode);
+                    }
                 }
             }
-
         } catch (Exception e) {
             e.printStackTrace();
         }

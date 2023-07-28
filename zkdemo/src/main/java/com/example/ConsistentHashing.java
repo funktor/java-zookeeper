@@ -18,10 +18,10 @@ public class ConsistentHashing {
         keyValueMap.put(key, value);
     }
 
-    public int getNextKey(String value) {
+    public int getNextKey(String value, boolean greater) {
         int key = getHash(value);
 
-        if (keyValueMap.containsKey(key)) {
+        if (!greater && keyValueMap.containsKey(key)) {
             return key;
         }
 
@@ -34,8 +34,8 @@ public class ConsistentHashing {
         return keyValueMap.higherEntry(key).getKey();
     }
 
-    public String getNext(String value) {
-        int key = getNextKey(value);
+    public String getNext(String value, boolean greater) {
+        int key = getNextKey(value, greater);
         return keyValueMap.get(key);
     }
 
