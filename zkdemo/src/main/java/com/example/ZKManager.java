@@ -2,7 +2,12 @@ package com.example;
 
 import java.util.List;
 
+import org.apache.zookeeper.AsyncCallback.ChildrenCallback;
+import org.apache.zookeeper.AsyncCallback.DataCallback;
+import org.apache.zookeeper.AsyncCallback.StatCallback;
+import org.apache.zookeeper.AsyncCallback.StringCallback;
 import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.data.Stat;
 
 public interface  ZKManager {
@@ -14,7 +19,10 @@ public interface  ZKManager {
 	 * @throws KeeperException
 	 * @throws InterruptedException
 	 */
-	public void create(String path, byte[] data, boolean isPersistent, boolean isSequential) throws KeeperException, InterruptedException;
+	public int create(String path, byte[] data, boolean isPersistent, boolean isSequential) throws KeeperException, InterruptedException;
+
+    public void createAsync(String path, byte[] data, StringCallback cb, boolean isPersistent, boolean isSequential) throws KeeperException,
+			InterruptedException;
 
 	/**
 	 * Get the ZNode Stats
@@ -25,6 +33,9 @@ public interface  ZKManager {
 	 * @throws InterruptedException
 	 */
 	public Stat getZNodeStats(String path) throws KeeperException,
+			InterruptedException;
+
+    public void getZNodeStatsAsync(String path, Watcher watcher, StatCallback cb) throws KeeperException,
 			InterruptedException;
 
 	/**
@@ -38,6 +49,9 @@ public interface  ZKManager {
 	public String getZNodeData(String path,boolean watchFlag) throws KeeperException,
 			InterruptedException;
 
+    public void getZNodeDataAsync(String path, Watcher watcher, DataCallback cb) throws KeeperException,
+			InterruptedException;
+
 	/**
 	 * Update the ZNode Data
 	 * 
@@ -49,6 +63,9 @@ public interface  ZKManager {
 	public void update(String path, byte[] data) throws KeeperException,
 			InterruptedException;
 
+    public void updateAsync(String path, byte[] data, StatCallback cb) throws KeeperException,
+			InterruptedException;
+
 	/**
 	 * Get ZNode children
 	 * 
@@ -58,6 +75,9 @@ public interface  ZKManager {
 	 * return List
 	 */
 	public List<String> getZNodeChildren(String path) throws KeeperException,
+			InterruptedException;
+
+    public void getZNodeChildrenAsync(String path, Watcher watcher, ChildrenCallback cb) throws KeeperException,
 			InterruptedException;
 
 	/**

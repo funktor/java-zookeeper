@@ -15,7 +15,9 @@ public class ConsistentHashing {
 
     public void insert(String value) {
         int key = getHash(value);
-        keyValueMap.put(key, value);
+        if (!keyValueMap.containsKey(key)) {
+            keyValueMap.put(key, value);
+        }
     }
 
     public int getNextKey(String value, boolean greater) {

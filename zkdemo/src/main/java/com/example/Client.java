@@ -9,6 +9,9 @@ import java.util.UUID;
 
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class Client {
     private static SocketChannel socket;
     private static Client instance;
@@ -33,18 +36,23 @@ public class Client {
     }
 
     private MessageParsedTuple split(String str, String delim) {
-        // Split str by delimiter
-        // Update str to point to last part after splitting
-        try {
-            String[] parts = str.split(delim);
-            str = parts[parts.length-1];
+        List<String> parts = new ArrayList<String>();
 
-            return new MessageParsedTuple(parts, str);
-        } catch (Exception e) {
-            e.printStackTrace();
+        while(true) {
+            int pos = str.indexOf(delim);
+            if (pos >= 0) {
+                String sub = str.substring(0, pos);
+                if (sub.length() > 0) {
+                    parts.add(sub);
+                }
+                str = str.substring(pos+delim.length());
+            }
+            else {
+                break;
+            }
         }
-        
-        return null;
+
+        return new MessageParsedTuple(parts, str);
     }
 
     public void getMessage() {
@@ -61,7 +69,7 @@ public class Client {
                     msg = remainder + msg;
                     MessageParsedTuple parsedTuple = split(msg, delim);
 
-                    String[] parts = parsedTuple.parts;
+                    List<String> parts = parsedTuple.parts;
                     msg = parsedTuple.finalString;
 
                     for (String in_msg : parts) {

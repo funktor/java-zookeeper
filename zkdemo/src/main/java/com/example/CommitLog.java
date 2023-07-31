@@ -2,6 +2,7 @@ package com.example;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -51,5 +52,18 @@ public class CommitLog {
 
     public int getSequence() {
         return sequence;
+    }
+
+    public void deleteLog() {
+        try {
+            File myObj = new File(logFile); 
+            if (myObj.delete()) { 
+                System.out.println("Deleted the file: " + myObj.getName());
+            } else {
+                System.out.println("Failed to delete the file.");
+            } 
+        } catch (Exception e) {
+			e.printStackTrace();
+		}
     }
 }

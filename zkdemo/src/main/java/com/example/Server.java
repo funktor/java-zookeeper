@@ -8,28 +8,32 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
-import java.util.PriorityQueue;
 import java.util.Iterator;
 import java.util.Set;
 import java.util.UUID;
-import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.zookeeper.AsyncCallback.ChildrenCallback;
+import org.apache.zookeeper.AsyncCallback.StatCallback;
+import org.apache.zookeeper.AsyncCallback.StringCallback;
+import org.apache.zookeeper.KeeperException.Code;
+import org.apache.zookeeper.Watcher.Event.EventType;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.Watcher;
 import org.json.JSONObject;
 
 import java.util.List;
 
 class MessageParsedTuple {
-    String[] parts;
+    List<String> parts;
     String finalString;
 
-    public MessageParsedTuple(String[] parts, String finalString) {
+    public MessageParsedTuple(List<String> parts, String finalString) {
         this.parts = parts;
         this.finalString = finalString;
     }
@@ -58,47 +62,159 @@ public class Server {
     private static Map<String, SocketChannel> nodeMap = new HashMap<String, SocketChannel>();
     private static String partitionId;
     private static boolean isLeader=false;
-    private static List<String> replicas = Collections.synchronizedList(new ArrayList<String>());
-    private static String partitionLeaderNode;
+    private static Set<String> replicas = new HashSet<String>();
     private static CommitLog commitLog;
     private static String DELIM = "<EOM>";
+    private static Watcher watchChildrenPartition;
+    private static Watcher watchChildrenReplicas;
+    private static Watcher watchForLeader;
+    private static ChildrenCallback addPartitionCallback;
+    private static ChildrenCallback addReplicaCallback;
+    private static StatCallback leaderStatCallback;
+    private static StringCallback createLeaderCallback;
+    private static StatCallback updateSeqStatCallback;
 
     public static void main(String[] args) throws IOException, KeeperException, InterruptedException {
-        // Get server host IP, port and partition id from command line
         String host = args[0];
         int port = Integer.parseInt(args[1]);
         hostPort = host + ":" + String.valueOf(port);
         partitionId = args[2];
 
-        // Commit log
         commitLog = new CommitLog("commitlog-" + hostPort + ".txt");
 
-        // Add server to consistent hashing table
-        addNodeToPartitioner();
+        watchChildrenPartition = new Watcher() {
+            @Override
+            public void process(WatchedEvent event) {
+                if (event.getType() == EventType.NodeChildrenChanged) {
+                    addPartitions();
+                }
+            }
+        };
 
-        // Create ZNodes for server
+        watchChildrenReplicas = new Watcher() {
+            @Override
+            public void process(WatchedEvent event) {
+                if (event.getType() == EventType.NodeChildrenChanged) {
+                    addReplicas();
+                }
+            }
+        };
+
+        watchForLeader = new Watcher() {
+            @Override
+            public void process(WatchedEvent event) {
+                if (event.getType() == EventType.NodeDeleted) {
+                    runForLeader();
+                }
+            }
+        };
+
+        addPartitionCallback = new ChildrenCallback() {
+            @Override
+            public void processResult(int rc, String path, Object ctx, List<String> children) {
+                switch(Code.get(rc)) {
+                    case OK:
+                        for (String partition : children) {
+                            if (!partition.equals(partitionId)) {
+                                System.out.println("Partition : " + partition);
+                                synchronized(partitioner) {
+                                    partitioner.insert(partition);
+                                }
+                            }
+                        }
+                        break;
+                    case CONNECTIONLOSS:
+                        addPartitions();
+                        break;
+                    default:
+                        break;
+                }
+            }
+        };
+
+        leaderStatCallback = new StatCallback() {
+            @Override
+            public void processResult(int rc, String path, Object ctx, Stat stat) {
+                switch(Code.get(rc)) {
+                    case NONODE:
+                        runForLeader();
+                        break;
+                    case CONNECTIONLOSS:
+                        leaderExists();
+                        break;
+                    case NODEEXISTS:
+                        leaderExists();
+                        break;
+                    default:
+                        break;
+                }
+            }
+        };
+
+        addReplicaCallback = new ChildrenCallback() {
+            @Override
+            public void processResult(int rc, String path, Object ctx, List<String> children) {
+                switch(Code.get(rc)) {
+                    case OK:
+                        synchronized(replicas) {
+                            replicas.clear();
+                            replicas.add(hostPort);
+                        }
+
+                        for (String replica : children) {
+                            System.out.println("Replica : " + replica);
+                            synchronized(replicas) {
+                                replicas.add(replica);
+                            }
+                        }
+                        break;
+                    case CONNECTIONLOSS:
+                        addReplicas();
+                        break;
+                    default:
+                        break;
+                }
+            }
+        };
+
+        createLeaderCallback = new StringCallback() {
+            @Override
+            public void processResult(int rc, String path, Object ctx, String name) {
+                switch(Code.get(rc)) {
+                    case CONNECTIONLOSS:
+                        runForLeader();
+                        break;
+                    case OK:
+                        System.out.println("New leader : " + hostPort);
+                        isLeader = true;
+                        break;
+                    case NODEEXISTS:
+                        leaderExists();
+                        break;
+                    default:
+                        break;
+                }
+            }
+        };
+
+        addNodeToReplicas();
+        addNodeToPartitioner();
         createZnodes();
 
-        // Run background threads for adding server to cluster, reconcile keys 
-        // in the consistent hashing ring and replicate logs to other replicas
-        new Thread(() -> addNodeToCluster()).start();
+        new Thread(() -> addPartitions()).start();
+        new Thread(() -> addReplicas()).start();
+        new Thread(() -> leaderExists()).start();
         new Thread(() -> runReconciliation()).start();
         new Thread(() -> replicate()).start();
 
-        // Create socket selector and a socket for server
         selector = Selector.open();
         serverSocket = ServerSocketChannel.open();
 
-        // Make server socket non-blocking
         serverSocket.bind(new InetSocketAddress("localhost", port));
         serverSocket.configureBlocking(false);
-
-        // Register server socket to selector
-        // Server socket can only ACCEPT, client sockets are READ
         serverSocket.register(selector, SelectionKey.OP_ACCEPT);
 
         while (true) {
-            // Get all sockets ready to connect or send message
             selector.select();
             Set<SelectionKey> selectedKeys = selector.selectedKeys();
             Iterator<SelectionKey> iter = selectedKeys.iterator();
@@ -106,14 +222,11 @@ public class Server {
             while (iter.hasNext()) {
                 SelectionKey key = iter.next();
 
-                // Client ready to connect to server.
-                // Accept and register the client socket.
                 if (key.isAcceptable()) {
                     SocketChannel client = serverSocket.accept();
                     register(selector, client);
                 }
 
-                // Client socket ready to send messages to server
                 if (key.isReadable()) {
                     SocketChannel client = (SocketChannel) key.channel();
                     List<String> msgs = getMessages(client);
@@ -128,63 +241,57 @@ public class Server {
     }
 
     public static MessageParsedTuple split(String str, String delim) {
-        // Split str by delimiter
-        // Update str to point to last part after splitting
-        try {
-            String[] parts = str.split(delim);
-            str = parts[parts.length-1];
+        List<String> parts = new ArrayList<String>();
 
-            return new MessageParsedTuple(parts, str);
-        } catch (Exception e) {
-            e.printStackTrace();
+        while(true) {
+            int pos = str.indexOf(delim);
+            if (pos >= 0) {
+                String sub = str.substring(0, pos);
+                if (sub.length() > 0) {
+                    parts.add(sub);
+                }
+                str = str.substring(pos+delim.length());
+            }
+            else {
+                break;
+            }
         }
-        
-        return null;
+
+        return new MessageParsedTuple(parts, str);
     }
 
     public static void register(Selector selector, SocketChannel client)
       throws IOException {
-        // Register socket with selector
-        // Need to make non-blocking
         client.configureBlocking(false);
         client.register(selector, SelectionKey.OP_READ);
     }
 
     public static List<String> getMessages(SocketChannel client) throws IOException {
-        // Parse messages from client socket
         ByteBuffer buffer = ByteBuffer.allocate(1024);
         String remainder = "";
         List<String> all_msgs = new ArrayList<String>();
 
         while(true) {
-            // Read r bytes from client socket into buffer
             int r = client.read(buffer);
 
             if (r > 0) {
-                // Convert to string
                 String msg = new String(buffer.array(), 0, r);
 
-                // Update msg by adding the in-complete message
-                // from last invocation to current invocation.
                 msg = remainder + msg;
                 MessageParsedTuple parsedTuple = split(msg, DELIM);
 
-                String[] parts = parsedTuple.parts;
+                List<String> parts = parsedTuple.parts;
                 msg = parsedTuple.finalString;
 
-                // Add all complete messages into list
-                all_msgs.addAll(Arrays.asList(parts));
+                all_msgs.addAll(parts);
 
-                // Update remainder to point to incomplete message.
                 remainder = msg;
                 buffer.clear();
             }
             else if (r == 0) {
-                // No more data to send
                 break;
             }
             else {
-                // Client closed connection
                 client.close();
                 System.out.println("Not accepting client messages anymore");
                 break;
@@ -195,16 +302,13 @@ public class Server {
     }
 
     public static void sendMessage(String request, String nodeHostPort) {
-        // Send message to nodeHostPort
         try {
             SocketChannel socket;
 
-            // Reuse socket to send message
             if (nodeMap.containsKey(nodeHostPort)) {
                 socket = nodeMap.get(nodeHostPort);
             }
             else {
-                // Socket being used for the 1st time
                 String[] ipPort = nodeHostPort.split(":");
                 String ip = ipPort[0];
                 int port = Integer.parseInt(ipPort[1]);
@@ -213,21 +317,15 @@ public class Server {
                 nodeMap.put(nodeHostPort, socket);
             }
 
-            // Write to socket
             ByteBuffer buffer = ByteBuffer.wrap(request.getBytes());
             
-            // If socket got closed before writing
-            int num_retries = 5;
-            int ret = 0;
-
-            while(ret < num_retries) {
+            while(true) {
                 int m = socket.write(buffer);
 
                 if (m == -1) {
-                    // Recreate socket and add again after 2 seconds.
                     socket.close();
 
-                    TimeUnit.SECONDS.sleep(2);
+                    TimeUnit.SECONDS.sleep(1);
 
                     String[] ipPort = nodeHostPort.split(":");
                     String ip = ipPort[0];
@@ -239,7 +337,6 @@ public class Server {
                 else {
                     break;
                 }
-                ret += 1;
             }
 
         } catch (Exception e) {
@@ -248,8 +345,6 @@ public class Server {
     }
 
     public static void handleRequest(String request, SocketChannel client) {
-        // Handle client request
-
         System.out.println(request);
         JSONObject obj = new JSONObject(request);
 
@@ -261,8 +356,6 @@ public class Server {
 
         try {
             if (request_type == 1) {
-                // Response given by another server
-                // Forward to client if required
                 if (requestMap.containsKey(request_id)) {
                     client = requestMap.get(request_id);
                     String clientMsg = obj.toString() + "<EOM>";
@@ -282,6 +375,21 @@ public class Server {
                         if (partition.equals(partitionId)) {
                             writeLog(request);
                             int seq = commitLog.getSequence();
+
+                            updateSeqStatCallback = new StatCallback() {
+                                @Override
+                                public void processResult(int rc, String path, Object ctx, Stat stat) {
+                                    switch(Code.get(rc)) {
+                                        case OK:
+                                            break;
+                                        default:
+                                            updateSequence(seq);
+                                            break;
+                                    }
+                                }
+                                
+                            };
+
                             updateSequence(seq);
 
                             myMap.insert(key, val, timestamp);
@@ -372,14 +480,10 @@ public class Server {
         try {
             byte[] data = "Hello".getBytes();
 
-            zkmanager.create("/sequence", data, true, false);
-            zkmanager.create("/replicas", data, true, false);
-            zkmanager.create("/leader", data, true, false);
-
-            zkmanager.create("/sequence/" + hostPort, "-1".getBytes(), false, false);
-            zkmanager.create("/replicas/" + partitionId, data, true, false);
-            zkmanager.create("/replicas/" + partitionId + "/" + hostPort + "_", data, false, true);
-            zkmanager.create("/leader/" + partitionId, hostPort.getBytes(), true, false);
+            zkmanager.create("/partitions", data, true, false);
+            zkmanager.create("/partitions/" + partitionId, data, true, false);
+            zkmanager.create("/partitions/" + partitionId + "/replicas", data, true, false);
+            zkmanager.create("/partitions/" + partitionId + "/replicas/" + hostPort, "-1".getBytes(), false, false);
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -396,81 +500,13 @@ public class Server {
         }
     }
 
-    public static String getLeaderNode(List<String> replicas) {
+    public static void addNodeToReplicas() {
         try {
-            PriorityQueue<NodeLeader> pq = new PriorityQueue<>(new Comparator<NodeLeader>() {
-                public int compare(NodeLeader a, NodeLeader b) {
-                    if (a.sequence_data == b.sequence_data) {
-                        return a.zk_node - b.zk_node;
-                    }
-                    else if (a.sequence_data < b.sequence_data) {
-                        return 1;
-                    }
-                    return -1;
-                }
-            });
-
-            for (String replica : replicas) {
-                String[] reps = replica.split("_");
-
-                String seq = zkmanager.getZNodeData("/sequence/" + reps[0], false);
-                int sequence = Integer.parseInt(seq);
-                
-                NodeLeader l = new NodeLeader(reps[0], sequence, Integer.parseInt(reps[1]));
-                pq.add(l);
-            }
-
-            NodeLeader leader = pq.peek();
-            return leader.connData;
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        return null;
-    }
-
-    public static void addOtherPartitions() {
-        try {
-            synchronized(partitioner) {
-                List<String> partIds = zkmanager.getZNodeChildren("/replicas");
-                
-                for (String part : partIds) {
-                    if (!part.equals(partitionId)) {
-                        partitioner.insert(part);
-                    }
-                }
+            synchronized(replicas) {
+                replicas.add(hostPort);
             }
         } catch (Exception e) {
             e.printStackTrace();
-        }
-    }
-
-    public static void addReplicas() {
-        try {
-            replicas = zkmanager.getZNodeChildren("/replicas/" + partitionId);
-            partitionLeaderNode = getLeaderNode(replicas);
-
-            if (partitionLeaderNode.equals(hostPort)) {
-                zkmanager.update("/leader/" + partitionId, hostPort.getBytes());
-                isLeader = true;
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    public static void addNodeToCluster() {
-        while(true) {
-            try {
-                addOtherPartitions();
-                addReplicas();
-
-                TimeUnit.SECONDS.sleep(1);
-
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
         }
     }
 
@@ -521,7 +557,7 @@ public class Server {
                         replica = reps[0];
 
                         if (!replica.equals(hostPort)) {
-                            String seq = zkmanager.getZNodeData("/sequence/" + replica, false);
+                            String seq = zkmanager.getZNodeData("/partitions/" + partitionId + "/replicas/" + replica, false);
                             int seqLong = Integer.parseInt(seq);
 
                             List<String> logsToSend = getLogs(seqLong+1);
@@ -564,7 +600,7 @@ public class Server {
 
     public static void updateSequence(int sequence) {
         try {
-            zkmanager.update("/sequence/" + hostPort, Integer.toString(sequence).getBytes());
+            zkmanager.updateAsync("/partitions/" + partitionId + "/replicas/" + hostPort, Integer.toString(sequence).getBytes(), updateSeqStatCallback);
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -573,11 +609,61 @@ public class Server {
     public static String getLeaderForPartition(String pid) {
         String leader = null;
         try {
-            leader = zkmanager.getZNodeData("/leader/" + pid, false);
+            leader = zkmanager.getZNodeData("/partitions/" + pid + "/leader", false);
         } catch (Exception e) {
             e.printStackTrace();
         }
 
         return leader;
+    }
+
+    public static void addPartitions() {
+        try {
+            zkmanager.getZNodeChildrenAsync("/partitions", watchChildrenPartition, addPartitionCallback);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void addReplicas() {
+        try {
+            zkmanager.getZNodeChildrenAsync("/partitions/" + partitionId + "/replicas", watchChildrenReplicas, addReplicaCallback);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void leaderExists() {
+        try {
+            zkmanager.getZNodeStatsAsync("/partitions/" + partitionId + "/leader", watchForLeader, leaderStatCallback);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void runForLeader() {
+        try {
+            int maxSeq = Integer.MIN_VALUE;
+            String leader = null;
+
+            if (replicas != null) {
+                for (String replica : replicas) {
+                    String seq = zkmanager.getZNodeData("/partitions/" + partitionId + "/replicas/" + replica, false);
+                    
+                    if (seq != null) {
+                        int seqs = Integer.parseInt(seq);
+
+                        if ((seqs > maxSeq) || (seqs == maxSeq && leader != null && replica.compareTo(leader) < 0)) {
+                            maxSeq = seqs;
+                            leader = replica;
+                        }
+                    }
+                }
+
+                zkmanager.createAsync("/partitions/" + partitionId + "/leader", leader.getBytes(), createLeaderCallback, false, false);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 }
