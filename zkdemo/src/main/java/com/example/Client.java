@@ -7,6 +7,7 @@ import java.nio.channels.SocketChannel;
 import java.util.Scanner;
 import java.util.UUID;
 
+import org.apache.commons.lang3.RandomStringUtils;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -107,20 +108,25 @@ public class Client {
 
         try {
             while(true) {
-                String input = in.nextLine();
-                String[] inputs = input.split(":");
+                String key = RandomStringUtils.randomAlphanumeric(5);
+                String val = RandomStringUtils.randomAlphanumeric(10);
+                String input = key + ":" + val;
+
+                // String input = in.nextLine();
+                // String[] inputs = input.split(":");
 
                 JSONObject jsonObj = new JSONObject();
 
                 UUID uuid = UUID.randomUUID();
 
-                if (inputs.length == 1) {
-                    jsonObj.put("operator", "GET");
-                }
-                else {
-                    jsonObj.put("operator", "PUT");
-                }
+                // if (inputs.length == 1) {
+                //     jsonObj.put("operator", "GET");
+                // }
+                // else {
+                //     jsonObj.put("operator", "PUT");
+                // }
 
+                jsonObj.put("operator", "PUT");
                 jsonObj.put("request_id", uuid.toString());
                 jsonObj.put("data", input);
                 jsonObj.put("request_type", 0);

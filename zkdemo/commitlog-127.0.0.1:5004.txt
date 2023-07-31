@@ -1,8 +1,0 @@
-{"data":"q:qwerty","request_type":0,"request_id":"e1fbb47a-e28c-4645-92a5-609abc1e4335","operator":"PUT","timestamp":1690795564427}
-{"data":"b:balloon","request_type":0,"request_id":"935cdb29-c33c-4fa2-a3b0-ffa50c2a5345","operator":"PUT","timestamp":1690795620968}
-{"data":"c:cat","request_type":0,"request_id":"03e3b5ea-1144-4877-b9cc-c87188a21710","operator":"PUT","timestamp":1690795554696}
-{"data":"h:hello","request_type":0,"request_id":"fe08d70b-06ca-465d-971f-17c64a808cf1","operator":"PUT","timestamp":1690795560191}
-{"data":"q:qwerty","request_type":0,"request_id":"68665727-2c45-4083-84e8-2b2cce548fe8","operator":"PUT","timestamp":1690795564427}
-{"data":"b:balloon","request_type":0,"request_id":"cd074e78-e417-46d6-b4cd-037b8ab2a385","operator":"PUT","timestamp":1690795620968}
-{"data":"c:cat","request_type":0,"request_id":"45b5bbad-3a4a-475a-bdf6-227b8cf9c1a2","operator":"PUT","timestamp":1690795554696}
-{"data":"h:hello","request_type":0,"request_id":"cd27e48f-6f93-4f1b-b1f1-9cbaf50bbd9d","operator":"PUT","timestamp":1690795560191}
